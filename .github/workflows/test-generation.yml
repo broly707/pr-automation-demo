@@ -1,0 +1,58 @@
+name: Reusable - AI Test Generation
+
+on:
+  workflow_call:
+    inputs:
+      head_sha:
+        required: true
+        type: string
+      head_ref:
+        required: true
+        type: string
+
+jobs:
+  generate-tests:
+    name: Generate & Commit Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout the branch (not the detached head_sha) with full write
+      # credentials so we can push the generated test commit directly onto
+      # the PR branch. Forked PRs cannot push (GITHUB_TOKEN has read-only
+      # perms on fork PRs by design) - the commit step below degrades
+      # gracefully in that case and just uploads the generated files as an
+      # artifact instead.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - run: pip install -r requirements.txt
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: changed-files-manifest
+          path: pr-automation-artifacts
+
+      - name: Generate tests with Groq
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: python -m scripts.generate_tests
+
+      - name: Commit generated tests back to PR branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python -m scripts.commit_generated_tests
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: generated-tests-manifest
+          path: pr-automation-artifacts/generated_tests.json
+          retention-days: 14
+          if-no-files-found: ignore

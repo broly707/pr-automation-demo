@@ -1,0 +1,163 @@
+name: Reusable - Lint / Static Analysis
+
+on:
+  workflow_call:
+    inputs:
+      has_android:
+        required: true
+        type: boolean
+      has_ios:
+        required: true
+        type: boolean
+      head_sha:
+        required: true
+        type: string
+
+jobs:
+  lint-android:
+    name: Android Static Analysis
+    if: inputs.has_android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - run: pip install -r requirements.txt
+
+      - name: Run ktlint, Android Lint, and Detekt (if configured)
+        id: lint
+        run: |
+          chmod +x ./gradlew
+          START=$(date +%s)
+          FAILED=0
+          DETAIL=""
+
+          if ./gradlew ktlintCheck --stacktrace; then
+            DETAIL="${DETAIL}ktlint: pass. "
+          else
+            DETAIL="${DETAIL}ktlint: FAIL. "
+            FAILED=1
+          fi
+
+          if ./gradlew lintDebug --stacktrace; then
+            DETAIL="${DETAIL}Android Lint: pass. "
+          else
+            DETAIL="${DETAIL}Android Lint: FAIL. "
+            FAILED=1
+          fi
+
+          if [ -f "config/detekt/detekt.yml" ]; then
+            if ./gradlew detekt --stacktrace; then
+              DETAIL="${DETAIL}Detekt: pass."
+            else
+              DETAIL="${DETAIL}Detekt: FAIL."
+              FAILED=1
+            fi
+          else
+            DETAIL="${DETAIL}Detekt: not configured, skipped."
+          fi
+
+          END=$(date +%s)
+          echo "duration=$((END-START))" >> "$GITHUB_OUTPUT"
+          echo "detail=$DETAIL" >> "$GITHUB_OUTPUT"
+          if [ "$FAILED" -eq 1 ]; then
+            echo "status=failure" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Record status
+        if: always()
+        run: |
+          python -m scripts.record_status \
+            --stage lint \
+            --status "${{ steps.lint.outputs.status || 'failure' }}" \
+            --detail "${{ steps.lint.outputs.detail || 'Android lint step did not complete' }}" \
+            --duration "${{ steps.lint.outputs.duration || 0 }}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lint-status-android
+          path: |
+            pr-automation-artifacts/status_lint.json
+            **/build/reports/ktlint/**
+            **/build/reports/lint-results-debug.xml
+            **/build/reports/detekt/**
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Fail job if lint failed
+        if: steps.lint.outputs.status != 'success'
+        run: exit 1
+
+  lint-ios:
+    name: iOS Static Analysis (SwiftLint)
+    if: inputs.has_ios
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - run: pip install -r requirements.txt
+
+      - name: Run SwiftLint (if configured)
+        id: lint
+        run: |
+          START=$(date +%s)
+          if [ -f ".swiftlint.yml" ]; then
+            if ! command -v swiftlint >/dev/null 2>&1; then
+              brew install swiftlint
+            fi
+            if swiftlint lint --strict --reporter github-actions-logging; then
+              STATUS=success
+              DETAIL="SwiftLint: pass."
+            else
+              STATUS=failure
+              DETAIL="SwiftLint: FAIL."
+            fi
+          else
+            STATUS=success
+            DETAIL="SwiftLint: not configured (.swiftlint.yml missing), skipped."
+          fi
+          END=$(date +%s)
+          echo "duration=$((END-START))" >> "$GITHUB_OUTPUT"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "detail=$DETAIL" >> "$GITHUB_OUTPUT"
+
+      - name: Record status
+        if: always()
+        run: |
+          python -m scripts.record_status \
+            --stage lint \
+            --status "${{ steps.lint.outputs.status || 'failure' }}" \
+            --detail "${{ steps.lint.outputs.detail || 'iOS lint step did not complete' }}" \
+            --duration "${{ steps.lint.outputs.duration || 0 }}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lint-status-ios
+          path: pr-automation-artifacts/status_lint.json
+          retention-days: 14
+
+      - name: Fail job if lint failed
+        if: steps.lint.outputs.status != 'success'
+        run: exit 1

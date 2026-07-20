@@ -1,0 +1,63 @@
+name: Reusable - Reporting
+
+on:
+  workflow_call:
+    inputs:
+      head_sha:
+        required: true
+        type: string
+
+jobs:
+  report:
+    name: Aggregate & Publish Report
+    runs-on: ubuntu-latest
+    # Runs even when upstream stages failed - the whole point is to always
+    # give the PR author a clear PASS/FAIL report, never a silent dead end.
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - run: pip install -r requirements.txt
+
+      # Pull down every artifact produced by every prior job in this run
+      # (build x2 platforms, lint x2, ai-review, test-execution x2, etc).
+      - uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+
+      - name: Merge per-platform status files
+        run: python -m scripts.merge_status --downloads-dir all-artifacts
+
+      - name: Aggregate final report
+        id: aggregate
+        run: |
+          if python -m scripts.aggregate_report; then
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failure" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish PR comment + check run
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python -m scripts.publish_pr_comment
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr-automation-final-report
+          path: |
+            pr-automation-artifacts/final_report.md
+            pr-automation-artifacts/final_status.json
+          retention-days: 30
+
+      - name: Fail this job if overall result is FAIL
+        if: steps.aggregate.outputs.status != 'success'
+        run: exit 1

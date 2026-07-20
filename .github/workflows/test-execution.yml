@@ -1,0 +1,171 @@
+name: Reusable - Test Execution
+
+on:
+  workflow_call:
+    inputs:
+      has_android:
+        required: true
+        type: boolean
+      has_ios:
+        required: true
+        type: boolean
+      head_ref:
+        required: true
+        type: string
+
+jobs:
+  test-android:
+    name: Run Android Unit Tests
+    if: inputs.has_android
+    runs-on: ubuntu-latest
+    steps:
+      # Pull the branch tip so we pick up any commit pushed by
+      # test-generation.yml, not the PR's original head_sha.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_ref }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - run: pip install -r requirements.txt
+
+      - name: Run existing unit tests
+        id: existing
+        run: |
+          chmod +x ./gradlew
+          START=$(date +%s)
+          if ./gradlew testDebugUnitTest --stacktrace; then
+            STATUS=success
+          else
+            STATUS=failure
+          fi
+          END=$(date +%s)
+          echo "duration=$((END-START))" >> "$GITHUB_OUTPUT"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+
+      - name: Record existing test status
+        if: always()
+        run: |
+          python -m scripts.record_status \
+            --stage existing_tests \
+            --status "${{ steps.existing.outputs.status || 'failure' }}" \
+            --detail "Gradle testDebugUnitTest (existing + newly committed generated tests run in the same task)" \
+            --duration "${{ steps.existing.outputs.duration || 0 }}"
+
+      # Gradle's testDebugUnitTest already picks up the AI-generated test
+      # files since they were committed into src/test/kotlin before this
+      # checkout. We still record a distinct "generated_tests" status so
+      # the report can call it out separately, mirroring the same result.
+      - name: Record generated test status
+        if: always()
+        run: |
+          python -m scripts.record_status \
+            --stage generated_tests \
+            --status "${{ steps.existing.outputs.status || 'failure' }}" \
+            --detail "AI-generated tests executed as part of testDebugUnitTest" \
+            --duration "0"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-android
+          path: |
+            pr-automation-artifacts/status_existing_tests.json
+            pr-automation-artifacts/status_generated_tests.json
+            **/build/test-results/testDebugUnitTest/*.xml
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Fail job if tests failed
+        if: steps.existing.outputs.status != 'success'
+        run: exit 1
+
+  test-ios:
+    name: Run iOS Unit Tests
+    if: inputs.has_ios
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - run: pip install -r requirements.txt
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData
+          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Run tests (existing + AI-generated)
+        id: tests
+        run: |
+          set -o pipefail
+          mkdir -p build_reports
+          START=$(date +%s)
+          PROJECT_FLAG="-project $(ls *.xcodeproj 2>/dev/null | head -n1)"
+          if ls *.xcworkspace >/dev/null 2>&1; then
+            PROJECT_FLAG="-workspace $(ls *.xcworkspace | head -n1)"
+          fi
+          SCHEME="${IOS_SCHEME:-App}"
+          if xcodebuild $PROJECT_FLAG -scheme "$SCHEME" \
+              -destination "platform=iOS Simulator,name=iPhone 15,OS=latest" \
+              -resultBundlePath build_reports/TestResults.xcresult \
+              test | tee build_reports/xcodebuild_test.log; then
+            STATUS=success
+          else
+            STATUS=failure
+          fi
+          END=$(date +%s)
+          echo "duration=$((END-START))" >> "$GITHUB_OUTPUT"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+        env:
+          IOS_SCHEME: ${{ vars.IOS_SCHEME }}
+
+      - name: Record existing test status
+        if: always()
+        run: |
+          python -m scripts.record_status \
+            --stage existing_tests \
+            --status "${{ steps.tests.outputs.status || 'failure' }}" \
+            --detail "xcodebuild test (existing + newly committed generated XCTest files run in the same invocation)" \
+            --duration "${{ steps.tests.outputs.duration || 0 }}"
+
+      - name: Record generated test status
+        if: always()
+        run: |
+          python -m scripts.record_status \
+            --stage generated_tests \
+            --status "${{ steps.tests.outputs.status || 'failure' }}" \
+            --detail "AI-generated XCTest files executed as part of xcodebuild test" \
+            --duration "0"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-ios
+          path: |
+            pr-automation-artifacts/status_existing_tests.json
+            pr-automation-artifacts/status_generated_tests.json
+            build_reports/TestResults.xcresult
+            build_reports/xcodebuild_test.log
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Fail job if tests failed
+        if: steps.tests.outputs.status != 'success'
+        run: exit 1

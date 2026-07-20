@@ -1,0 +1,185 @@
+name: PR Automation Orchestrator
+
+# ----------------------------------------------------------------------------
+# Fires on the three PR lifecycle events required for automated review, and
+# nothing else. This keeps the orchestrator itself tiny — all real logic
+# lives in the reusable workflows it calls (build.yml, lint.yml, etc), which
+# is what keeps this maintainable as the number of stages grows.
+# ----------------------------------------------------------------------------
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# Cancel superseded runs when new commits land on the same PR, so we don't
+# burn CI minutes reviewing commits nobody cares about anymore.
+concurrency:
+  group: pr-automation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write        # required to push AI-generated test commits
+  pull-requests: write    # required to comment on the PR
+  checks: write           # required to publish the branch-protection check run
+
+env:
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+  HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+  HEAD_REF: ${{ github.event.pull_request.head.ref }}
+  BASE_REF: ${{ github.event.pull_request.base.ref }}
+
+jobs:
+  # --------------------------------------------------------------------- #
+  # 1. Detect project type. Every other job depends on this so we never
+  #    run Android tooling on an iOS-only repo or vice versa.
+  # --------------------------------------------------------------------- #
+  detect:
+    name: Detect Project Type
+    runs-on: ubuntu-latest
+    outputs:
+      has_android: ${{ steps.detect.outputs.has_android }}
+      has_ios: ${{ steps.detect.outputs.has_ios }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - run: pip install -r requirements.txt
+
+      - id: detect
+        run: python -m scripts.detect_project_type
+
+  # --------------------------------------------------------------------- #
+  # 2. Collect the PR's changed files once, shared by AI review + test gen.
+  # --------------------------------------------------------------------- #
+  collect-changes:
+    name: Collect Changed Files
+    needs: detect
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - run: pip install -r requirements.txt
+
+      - env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python -m scripts.collect_changed_files
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: changed-files-manifest
+          path: pr-automation-artifacts/changed_files.json
+          retention-days: 14
+
+  # --------------------------------------------------------------------- #
+  # 3. Build + Lint run in parallel, matrixed by platform. Independent jobs
+  #    run concurrently for speed.
+  # --------------------------------------------------------------------- #
+  build:
+    name: Build
+    needs: detect
+    if: needs.detect.outputs.has_android == 'true' || needs.detect.outputs.has_ios == 'true'
+    uses: ./.github/workflows/build.yml
+    with:
+      has_android: ${{ needs.detect.outputs.has_android == 'true' }}
+      has_ios: ${{ needs.detect.outputs.has_ios == 'true' }}
+      head_sha: ${{ github.event.pull_request.head.sha }}
+    secrets: inherit
+
+  lint:
+    name: Lint / Static Analysis
+    needs: detect
+    if: needs.detect.outputs.has_android == 'true' || needs.detect.outputs.has_ios == 'true'
+    uses: ./.github/workflows/lint.yml
+    with:
+      has_android: ${{ needs.detect.outputs.has_android == 'true' }}
+      has_ios: ${{ needs.detect.outputs.has_ios == 'true' }}
+      head_sha: ${{ github.event.pull_request.head.sha }}
+    secrets: inherit
+
+  # --------------------------------------------------------------------- #
+  # 4. AI code review runs independently of build/lint - it only needs the
+  #    diff, not a compiled project - so it runs fully in parallel.
+  # --------------------------------------------------------------------- #
+  ai-review:
+    name: AI Code Review
+    needs: [detect, collect-changes]
+    uses: ./.github/workflows/ai-code-review.yml
+    with:
+      head_sha: ${{ github.event.pull_request.head.sha }}
+    secrets: inherit
+
+  # --------------------------------------------------------------------- #
+  # 5. Test generation depends only on the changed-files manifest. It
+  #    writes + commits new test files back onto the PR branch.
+  # --------------------------------------------------------------------- #
+  test-generation:
+    name: AI Test Generation
+    needs: [detect, collect-changes]
+    uses: ./.github/workflows/test-generation.yml
+    with:
+      head_sha: ${{ github.event.pull_request.head.sha }}
+      head_ref: ${{ github.event.pull_request.head.ref }}
+    secrets: inherit
+
+  # --------------------------------------------------------------------- #
+  # 6. Test execution needs both the build (Android needs assembled
+  #    dependencies cached; iOS needs the built app) and the freshly
+  #    generated + committed tests.
+  # --------------------------------------------------------------------- #
+  test-execution:
+    name: Run Tests (Existing + Generated)
+    needs: [detect, build, test-generation]
+    uses: ./.github/workflows/test-execution.yml
+    with:
+      has_android: ${{ needs.detect.outputs.has_android == 'true' }}
+      has_ios: ${{ needs.detect.outputs.has_ios == 'true' }}
+      # Re-checkout at the branch tip (not the original head_sha) because
+      # test-generation may have pushed a new commit with generated tests.
+      head_ref: ${{ github.event.pull_request.head.ref }}
+    secrets: inherit
+
+  # --------------------------------------------------------------------- #
+  # 7. Reporting always runs, even if upstream stages failed, so the PR
+  #    always gets a clear PASS/FAIL report instead of a silent dead end.
+  # --------------------------------------------------------------------- #
+  reporting:
+    name: Aggregate & Publish Report
+    needs: [build, lint, ai-review, test-execution]
+    if: always()
+    uses: ./.github/workflows/reporting.yml
+    with:
+      head_sha: ${{ github.event.pull_request.head.sha }}
+    secrets: inherit
+
+  # --------------------------------------------------------------------- #
+  # 8. Single gate job. Add THIS job (not the individual stage jobs) to
+  #    branch protection's required status checks. It fails if reporting
+  #    determined overall_pass == false, which happens automatically
+  #    whenever build/lint/existing tests/generated tests fail, or a
+  #    critical-severity AI review finding is present.
+  # --------------------------------------------------------------------- #
+  gate:
+    name: PR Automation Gate
+    needs: reporting
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Fail if any required stage failed
+        run: |
+          if [ "${{ needs.reporting.result }}" != "success" ]; then
+            echo "One or more required stages failed. See the PR comment for the full report."
+            exit 1
+          fi
+          echo "All required stages passed."
