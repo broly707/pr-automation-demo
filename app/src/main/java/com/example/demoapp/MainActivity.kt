@@ -19,7 +19,7 @@ class MainActivity : ComponentActivity() {
             DemoAppTheme {
                 Box(
                     modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
+                    contentAlignment = Alignment.Center,
                 ) {
                     Text("Hello World")
                 }
