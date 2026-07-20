@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # PR Automation Pipeline
 
 Production-grade GitHub Actions automation for Android (Kotlin) and iOS
@@ -98,3 +99,6 @@ Nothing is hardcoded. All models, thresholds, paths, and limits live in
 [`config/pipeline.yml`](config/pipeline.yml). Prompt templates live in
 `config/review_prompts/` and `config/test_prompts/` so prompt tuning never
 requires touching Python.
+=======
+# pr-automation-demo
+>>>>>>> 6836ca3b9566948a76e870a39e41df9ae3d01f2a
