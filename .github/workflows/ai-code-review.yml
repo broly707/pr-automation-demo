@@ -1,0 +1,57 @@
+name: Reusable - AI Code Review
+
+on:
+  workflow_call:
+    inputs:
+      head_sha:
+        required: true
+        type: string
+
+jobs:
+  ai-review:
+    name: AI Code Review (Groq)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - run: pip install -r requirements.txt
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: changed-files-manifest
+          path: pr-automation-artifacts
+
+      - name: Run AI code review
+        id: review
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          if python -m scripts.ai_code_review; then
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          else
+            # Non-zero can mean either a critical finding (real gate failure)
+            # or an API/parsing error. Either way we still publish the
+            # report artifact; the gate job decides overall pass/fail.
+            echo "status=failure" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ai-review-report
+          path: |
+            pr-automation-artifacts/ai_review_report.md
+            pr-automation-artifacts/ai_review_android.json
+            pr-automation-artifacts/ai_review_ios.json
+          retention-days: 14
+
+      - name: Fail job on critical/high findings (per config fail_on_severity)
+        if: steps.review.outputs.status != 'success'
+        run: exit 1

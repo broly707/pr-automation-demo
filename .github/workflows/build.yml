@@ -1,0 +1,148 @@
+name: Reusable - Build
+
+on:
+  workflow_call:
+    inputs:
+      has_android:
+        required: true
+        type: boolean
+      has_ios:
+        required: true
+        type: boolean
+      head_sha:
+        required: true
+        type: string
+
+jobs:
+  build-android:
+    name: Build Android (assembleDebug)
+    if: inputs.has_android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Caches ~/.gradle/caches and wrapper dists, keyed on the wrapper
+      # version and all gradle lock/build files, so unrelated PRs share the
+      # cache and only invalidate when dependencies actually change.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - run: pip install -r requirements.txt
+
+      - name: Assemble Debug
+        id: assemble
+        run: |
+          chmod +x ./gradlew
+          START=$(date +%s)
+          if ./gradlew assembleDebug --stacktrace; then
+            STATUS=success
+          else
+            STATUS=failure
+          fi
+          END=$(date +%s)
+          echo "duration=$((END-START))" >> "$GITHUB_OUTPUT"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+
+      - name: Record status
+        if: always()
+        run: |
+          python -m scripts.record_status \
+            --stage build \
+            --status "${{ steps.assemble.outputs.status || 'failure' }}" \
+            --detail "Android assembleDebug (Gradle)" \
+            --duration "${{ steps.assemble.outputs.duration || 0 }}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-status-android
+          path: pr-automation-artifacts/status_build.json
+          retention-days: 14
+
+      - name: Fail job if build failed
+        if: steps.assemble.outputs.status != 'success'
+        run: exit 1
+
+  build-ios:
+    name: Build iOS (xcodebuild)
+    if: inputs.has_ios
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - run: pip install -r requirements.txt
+
+      - name: Resolve Swift Package Manager cache path
+        id: spm-cache
+        run: echo "path=$HOME/Library/Developer/Xcode/DerivedData" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.spm-cache.outputs.path }}
+          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Build
+        id: xcodebuild
+        run: |
+          set -o pipefail
+          mkdir -p build_reports
+          START=$(date +%s)
+          PROJECT_FLAG="-project $(ls *.xcodeproj 2>/dev/null | head -n1)"
+          if ls *.xcworkspace >/dev/null 2>&1; then
+            PROJECT_FLAG="-workspace $(ls *.xcworkspace | head -n1)"
+          fi
+          SCHEME="${IOS_SCHEME:-App}"
+          if xcodebuild $PROJECT_FLAG -scheme "$SCHEME" \
+              -destination "platform=iOS Simulator,name=iPhone 15,OS=latest" \
+              build | tee build_reports/xcodebuild.log; then
+            STATUS=success
+          else
+            STATUS=failure
+          fi
+          END=$(date +%s)
+          echo "duration=$((END-START))" >> "$GITHUB_OUTPUT"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+        env:
+          IOS_SCHEME: ${{ vars.IOS_SCHEME }}
+
+      - name: Record status
+        if: always()
+        run: |
+          python -m scripts.record_status \
+            --stage build \
+            --status "${{ steps.xcodebuild.outputs.status || 'failure' }}" \
+            --detail "iOS xcodebuild (see build_reports/xcodebuild.log)" \
+            --duration "${{ steps.xcodebuild.outputs.duration || 0 }}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-status-ios
+          path: |
+            pr-automation-artifacts/status_build.json
+            build_reports/xcodebuild.log
+          retention-days: 14
+
+      - name: Fail job if build failed
+        if: steps.xcodebuild.outputs.status != 'success'
+        run: exit 1

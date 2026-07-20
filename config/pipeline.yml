@@ -1,0 +1,109 @@
+# =============================================================================
+# pipeline.yml
+# Central configuration for the PR Automation pipeline.
+# Every script under scripts/ reads its knobs from here instead of hardcoding
+# values. Edit this file to change behavior — do not edit workflow YAML or
+# Python for routine tuning.
+# =============================================================================
+
+general:
+  # Root-relative paths used for project detection
+  android_markers:
+    - "build.gradle"
+    - "build.gradle.kts"
+    - "settings.gradle"
+    - "settings.gradle.kts"
+  ios_markers:
+    - "*.xcodeproj"
+    - "*.xcworkspace"
+    - "Package.swift"
+
+  # File extensions considered "source" for diff review / test generation
+  android_source_extensions: [".kt", ".kts"]
+  ios_source_extensions: [".swift"]
+
+  # Files/paths excluded from AI review and test generation entirely
+  excluded_paths:
+    - "**/build/**"
+    - "**/.gradle/**"
+    - "**/generated/**"
+    - "**/*Generated*.kt"
+    - "**/Pods/**"
+    - "**/DerivedData/**"
+    - "**/*.pb.swift"
+
+android:
+  module_root: "."                      # repo root containing settings.gradle
+  gradle_wrapper: "./gradlew"
+  assemble_task: "assembleDebug"
+  unit_test_task: "testDebugUnitTest"
+  ktlint_task: "ktlintCheck"
+  detekt_task: "detekt"
+  lint_task: "lintDebug"
+  detekt_config_path: "config/detekt/detekt.yml"   # optional, script checks existence
+  test_source_set: "src/test/kotlin"               # relative to each module
+  main_source_set: "src/main/kotlin"
+  test_report_glob: "**/build/test-results/testDebugUnitTest/*.xml"
+  lint_report_glob: "**/build/reports/lint-results-debug.xml"
+  ktlint_report_glob: "**/build/reports/ktlint/**/*.xml"
+  detekt_report_glob: "**/build/reports/detekt/detekt.xml"
+
+ios:
+  scheme: "App"                      # override per-repo via repo variable IOS_SCHEME
+  workspace_or_project: "auto"       # "auto" = script picks .xcworkspace if present else .xcodeproj
+  configuration: "Debug"
+  destination: "platform=iOS Simulator,name=iPhone 15,OS=latest"
+  test_source_root: "Tests"          # relative to repo root, mirrored per target
+  swiftlint_config_path: ".swiftlint.yml"
+  build_log_path: "build_reports/xcodebuild.log"
+  test_result_bundle: "build_reports/TestResults.xcresult"
+
+ai_review:
+  provider: "groq"
+  model: "llama-3.3-70b-versatile"
+  temperature: 0.2
+  max_output_tokens: 4096
+  # Hard cap on total characters of diff sent to the LLM across all files.
+  # Keeps cost/latency bounded and respects context limits.
+  max_diff_characters: 60000
+  # Per-file cap; larger files are truncated with a clear marker.
+  max_characters_per_file: 12000
+  max_files_per_request: 25
+  # Any finding at or above this severity fails the "ai-review" check.
+  fail_on_severity: "critical"        # one of: critical, high, medium, low, none
+  severities: ["critical", "high", "medium", "low"]
+  request_timeout_seconds: 60
+  max_retries: 4
+  retry_backoff_base_seconds: 2
+
+test_generation:
+  provider: "groq"
+  model: "llama-3.3-70b-versatile"
+  temperature: 0.1
+  max_output_tokens: 4096
+  # Only generate tests for files that are added/modified and are
+  # implementation files (not test files themselves).
+  skip_if_test_file_exists: true
+  max_files_to_generate: 15
+  request_timeout_seconds: 90
+  max_retries: 4
+  retry_backoff_base_seconds: 2
+  commit:
+    enabled: true
+    author_name: "pr-automation-bot"
+    author_email: "pr-automation-bot@users.noreply.github.com"
+    commit_message_prefix: "test: add AI-generated unit tests"
+
+reporting:
+  pr_comment_marker: "<!-- pr-automation-report -->"
+  report_artifact_name: "pr-automation-report"
+  fail_pipeline_on:
+    - "build"
+    - "lint"
+    - "existing_tests"
+    - "generated_tests"
+    - "ai_review_critical"
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"

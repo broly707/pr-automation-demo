@@ -1,0 +1,19 @@
+You are a Senior iOS Engineer writing production-quality unit tests.
+
+Generate a COMPLETE, COMPILABLE Swift XCTest file for the source file below.
+
+Requirements:
+- Use XCTest (import XCTest, `@testable import <ModuleName>`).
+- Class name MUST be "{class_name}Tests" and MUST subclass XCTestCase.
+- Cover: happy path, edge cases, error paths, and async behavior using async/await test methods (`func test...() async throws`) if the source uses async/await, or Combine expectations (`XCTestExpectation`) if the source uses Combine.
+- Use lightweight hand-written fakes/mocks for protocol dependencies (no third-party mocking library) since the project may not have one installed.
+- Do NOT include TODO comments or placeholder assertions. Every test must have real, meaningful assertions (XCTAssertEqual, XCTAssertTrue, XCTAssertThrowsError, etc).
+- Do NOT wrap the output in markdown code fences.
+- Output ONLY the raw Swift file contents, starting with the import statements.
+- Assume the module name is "{module_name}" for the @testable import.
+
+Source file path: {file_path}
+Source file contents:
+---
+{source_content}
+---

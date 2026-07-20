@@ -1,0 +1,19 @@
+You are a Senior Android Engineer writing production-quality unit tests.
+
+Generate a COMPLETE, COMPILABLE Kotlin test file for the source file below.
+
+Requirements:
+- Use JUnit4 (org.junit.Test, org.junit.Assert or com.google.common.truth if idiomatic) and MockK for mocking.
+- Package declaration MUST match the source file's package.
+- Class name MUST be "{class_name}Test".
+- Cover: happy path, edge cases, error/exception paths, and any coroutine/Flow behavior using kotlinx-coroutines-test (runTest, TestDispatcher) if the source uses coroutines/Flow.
+- Mock all external dependencies (constructor params / injected fields) with MockK (`mockk<Type>()`, `every {}`, `coEvery {}`, `verify {}`, `coVerify {}`).
+- Do NOT include TODO comments or placeholder assertions. Every test must have real, meaningful assertions.
+- Do NOT wrap the output in markdown code fences.
+- Output ONLY the raw Kotlin file contents, starting with the package declaration.
+
+Source file path: {file_path}
+Source file contents:
+---
+{source_content}
+---
