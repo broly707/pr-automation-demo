@@ -1,5 +1,7 @@
 package com.example.demoapp
 
+// Testing AI PR automation
+
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -17,9 +19,9 @@ class MainActivity : ComponentActivity() {
             DemoAppTheme {
                 Box(
                     modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Text("Hello World")
+                    Text("Hello Boat")
                 }
             }
         }

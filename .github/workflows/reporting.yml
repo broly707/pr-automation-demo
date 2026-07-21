@@ -6,11 +6,25 @@ on:
       head_sha:
         required: true
         type: string
+      pr_number:
+        required: true
+        type: string
+      head_ref:
+        required: true
+        type: string
+      base_ref:
+        required: true
+        type: string
 
 jobs:
   report:
     name: Aggregate & Publish Report
     runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ inputs.pr_number }}
+      HEAD_SHA: ${{ inputs.head_sha }}
+      HEAD_REF: ${{ inputs.head_ref }}
+      BASE_REF: ${{ inputs.base_ref }}
     # Runs even when upstream stages failed - the whole point is to always
     # give the PR author a clear PASS/FAIL report, never a silent dead end.
     if: always()
